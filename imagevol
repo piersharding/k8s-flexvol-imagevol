@@ -1,0 +1,326 @@
+#!/bin/bash
+
+# flexVolume Driver for mounting an image as a volume
+# image is pulled, exported, and unpacked onto the local filesystem
+# only a single copy is held on the filesystem and this is then available
+# for multi-mount (ReadWriteMany)
+
+# Copyright 2019 Piers Harding.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Use:
+#
+# Create a place holder StorageClass
+# ---
+#   apiVersion: storage.k8s.io/v1
+#   kind: StorageClass
+#   metadata:
+#     name: imagevol
+#   provisioner: piersharding/imagevol
+#   parameters:
+#     description: "Volume from ImageVol FlexVolume driver"
+#
+#  Create a PersistentVolume with the key options: image and hostTarget (optional)
+#  image: must be a valid image:tag that will be pulled and used to seed the volume
+#  hostTarget: optional named directory that will be used as the storage location
+# for the unpacked image
+# ---
+# apiVersion: v1
+# kind: PersistentVolume
+# metadata:
+#   name: pv-flex-imagevol-0001
+# spec:
+#   capacity:
+#     storage: 1Gi
+#   accessModes:
+#     - ReadWriteMany
+#   flexVolume:
+#     driver: "piersharding/imagevol"
+#     options:
+#       image: "piersharding/k8s-flexvol-imagevol-test:latest"
+#       hostTarget: /data/images
+#   storageClassName: imagevol
+
+# setup environment
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+if [ -f "${SCRIPT_DIR}/../../imagevol_env.rc" ]; then
+        source ${SCRIPT_DIR}/../../imagevol_env.rc
+fi
+DRIVER_LOCATION=${DRIVER_LOCATION:-/usr/libexec/kubernetes/kubelet-plugins/volume/}
+STATE_DIR=${DRIVER_LOCATION}/imagvol/state
+# /var/snap/microk8s/common/run/containerd.sock for microk8s
+# everything else should be /run/containerd/containerd.sock
+RUNTIME_ENDPOINT=${RUNTIME_ENDPOINT:-/run/containerd/containerd.sock}
+CTR_EXE=${CTR_EXE:-${DRIVER_LOCATION}/ctr}
+JQ_EXE=${JQ_EXE:-${DRIVER_LOCATION}/jq}
+HOST_TARGET=${HOST_TARGET:-/var/tmp/images}
+PLATFORM="linux/amd64"
+MOUNTINFO=/proc/self/mountinfo
+TEMP_DIR=/var/tmp
+DEBUG=false
+
+
+# Notes:
+usage() {
+	err "Invalid usage. Usage: "
+	err "\t$0 init"
+	err "\t$0 mount <mount dir> <json params>"
+	err "\t$0 unmount <mount dir>"
+	exit 1
+}
+
+FLEX_IMAGEVOL_LOG=${FLEX_IMAGEVOL_LOG:-"/var/tmp/flex-imagevol.log"}
+
+err() {
+	logger "[imagevol][$$] err: $*"
+	echo -ne $* 1>&2
+}
+
+log() {
+	debug "[imagevol] output: $*"
+	echo -ne $* >&1
+}
+
+debug() {
+	if [ "${DEBUG}" == "true" ]; then
+		logger "[imagevol][$$] debug: $*"
+		echo "$(date)[$$] $*" >> "${FLEX_IMAGEVOL_LOG}"
+	fi
+}
+
+failandexit() {
+	log "{\"status\":\"Failure\",\"message\":\"$*\"}"
+	RC=1
+	exit 1
+}
+
+domount() {
+	debug "##################################  domount $@"
+	MNTPATH=$1
+	JSON=$2
+
+	IMAGE=$(echo ${JSON} | ${JQ_EXE} -r '.image')
+	TARGET=$(echo ${JSON} | ${JQ_EXE} -r '.hostTarget')
+	POD_UID=$(echo ${JSON} | ${JQ_EXE} -r '.["kubernetes.io/pod.uid"]')
+	HOST_TARGET=${TARGET:-${HOST_TARGET}}
+	IMAGE_DIR=$(echo "${IMAGE}" | sed 's/[^0-9A-Za-z_.]/_/g')
+	HOST_TARGET_DIR="${HOST_TARGET}/${IMAGE_DIR}"
+	TEMP_IMAGE_DIR=${HOST_TARGET_DIR}/tmpimage
+	TEMP_IMAGE=${TEMP_IMAGE_DIR}/image.tar
+	UNPACK_IMAGE_DIR=${HOST_TARGET_DIR}/unpack
+	IMAGE_MNT_DIR=${HOST_TARGET_DIR}/mnt
+	STATE_DIR=${IMAGE_MNT_DIR}/.imagevol_state
+
+	debug "domount: MNTPATH='${MNTPATH}' MOUNT_STATE_DIR='${STATE_DIR}' JSON='${JSON}'"
+	debug "domount params:  TARGET=\"${TARGET}\"  HOST_TARGET=\"${HOST_TARGET}\" IMAGE=\"${IMAGE}\" IMAGE_DIR=\"${IMAGE_DIR}\" HOST_TARGET_DIR=\"${HOST_TARGET_DIR}\"  TEMP_IMAGE_DIR=\"${TEMP_IMAGE_DIR}\" 	TEMP_IMAGE=\"${TEMP_IMAGE}\" 	UNPACK_IMAGE_DIR=\"${UNPACK_IMAGE_DIR}\" 	IMAGE_MNT_DIR=\"${IMAGE_MNT_DIR}\" "
+
+	# lock early and long
+	# store state in IMAGE directory: from/to/image
+	LOCKFILE="${TEMP_DIR}/${IMAGE_DIR}.lock"
+	TIMEOUT=300  # 5 minutes - sometimes it takes a long time to download images ...
+	debug "mount: LOCKFILE=${LOCKFILE}"
+
+	( flock -w ${TIMEOUT} -x 9 || failandexit "mount: [${MNTPATH}] failed to update state [exlock $LOCKFILE]";   checkandmount ) 9>${LOCKFILE}
+	exit ${RC}
+}
+
+# do the mounting and recording of the image
+# called in the context of flock
+checkandmount () {
+
+	RC=0
+
+	# qualify image name
+	# match: localhost:5000/image:tag
+	# match: k8s.io/user/image:tag
+	echo "${IMAGE}" | grep -E '\w+\.\w+.*\/.*\:.*|\w+\:[0-9]{2,4}\/.*\:.*' >/dev/null 2>&1
+	RC=$?
+	if [[ ! "${RC}" == "0" ]]; then
+		# prefix with docker registry if required
+		echo "${IMAGE}" | grep -E '\w+.*\/.*\:.*' >/dev/null 2>&1
+		RC=$?
+		if  [[ ! "${RC}" == "0" ]]; then
+			IMAGE="docker.io/library/${IMAGE}"
+		else
+			IMAGE="docker.io/${IMAGE}"
+		fi
+	fi
+	debug "mount: Image: ${IMAGE}"
+	debug "mount: checking for first mount"
+	if [ ! -d "${STATE_DIR}" ] || [ -d "${HOST_TARGET_DIR}/deleted" ]; then
+		debug "mount: THIS IS A first mount"
+	  mkdir -p "${HOST_TARGET_DIR}" "${STATE_DIR}" "${TEMP_IMAGE_DIR}" "${UNPACK_IMAGE_DIR}" "${IMAGE_MNT_DIR}" >/dev/null 2>&1
+		# pull
+		debug "mount/pull: ${CTR_EXE} -n k8s.io  -a ${RUNTIME_ENDPOINT} image pull --platform "${PLATFORM}" ${IMAGE}"
+		RES=$(${CTR_EXE} -n k8s.io  -a ${RUNTIME_ENDPOINT} image pull --platform "${PLATFORM}" ${IMAGE}  2>&1)
+		RC=$?
+	  if [ ${RC} -ne 0 ]; then
+				debug "pull: ${RES}"
+				rm -rf "${HOST_TARGET_DIR}" >/dev/null 2>&1
+	      log "{ \"status\": \"Failure\", \"message\": \"Failed to pull image ${IMAGE} for ${MNTPATH}\"}"
+				RC=1
+	      exit 1
+	  fi
+
+		# export
+		debug "mount/export: ${CTR_EXE} -n k8s.io  -a ${RUNTIME_ENDPOINT} image export --platform "${PLATFORM}" ${TEMP_IMAGE}  ${IMAGE}"
+		RES=$(${CTR_EXE} -n k8s.io  -a ${RUNTIME_ENDPOINT} image export --platform "${PLATFORM}" ${TEMP_IMAGE}  ${IMAGE} 2>&1)
+		RC=$?
+	  if [ ${RC} -ne 0 ]; then
+				debug "export: ${RES}"
+				rm -rf "${HOST_TARGET_DIR}" >/dev/null 2>&1
+	      log "{ \"status\": \"Failure\", \"message\": \"Failed to export image ${IMAGE} to ${TEMP_IMAGE} for ${MNTPATH}\"}"
+				RC=1
+	      exit 1
+	  fi
+
+		# unpack
+		RES=$(tar -xf ${TEMP_IMAGE} -C ${UNPACK_IMAGE_DIR} 2>&1)
+		RC=$?
+		debug "unpack: ${RES}"
+	  if [ ${RC} -ne 0 ]; then
+				rm -rf "${HOST_TARGET_DIR}" >/dev/null 2>&1
+	      log "{ \"status\": \"Failure\", \"message\": \"Failed to unpack image ${TEMP_IMAGE} into ${UNPACK_IMAGE_DIR} for ${MNTPATH}\"}"
+				RC=1
+	      exit 1
+	  fi
+		for BLOB in `cat ${UNPACK_IMAGE_DIR}/manifest.json | jq -r '.[].Layers[]'`
+		do
+		    RES=$(tar -xzf ${UNPACK_IMAGE_DIR}/${BLOB} -C ${IMAGE_MNT_DIR} 2>&1)
+				RC=$?
+				debug "blob unpack [${BLOB}]: ${RES}"
+			  if [ ${RC} -ne 0 ]; then
+						rm -rf "${HOST_TARGET_DIR}" >/dev/null 2>&1
+			      log "{ \"status\": \"Failure\", \"message\": \"Failed to unpack blob ${BLOB} into ${UNPACK_IMAGE_DIR} for ${MNTPATH}\"}"
+						RC=1
+			      exit 1
+			  fi
+		done
+	else
+		debug "mount: THIS IS NOT A first mount for ${IMAGE}"
+	fi
+
+	rm -rf ${TEMP_IMAGE_DIR} ${UNPACK_IMAGE_DIR} >/dev/null 2>&1
+
+	# bind mount to unpacked image
+  mkdir -p ${MNTPATH} &> /dev/null
+  RES=$(mount --bind "${IMAGE_MNT_DIR}" "${MNTPATH}" 2>&1)
+  if [ $? -ne 0 ]; then
+		debug "mount bind [${IMAGE_MNT_DIR} to ${MNTPATH}]: ${RES}"
+		rm -rf "${HOST_TARGET_DIR}" >/dev/null 2>&1
+    log "{ \"status\": \"Failure\", \"message\": \"Failed to mount ${IMAGE_MNT_DIR} at ${MNTPATH}\"}"
+		RC=1
+    exit 1
+  fi
+
+	echo "${IMAGE_MNT_DIR}" > ${STATE_DIR}/from
+	echo "${MNTPATH}" >> ${STATE_DIR}/to
+	echo "${IMAGE_DIR}" > ${STATE_DIR}/image
+
+	log "{\"status\":\"Success\"}"
+	RC=0
+	exit 0
+}
+
+unmount() {
+	debug "############  unmount $@"
+	MNTPATH=$1
+	RC=0
+
+	SOURCE_MNT_DIR=$(grep " ${MNTPATH} " ${MOUNTINFO} | awk '{print $4}' | head -1)
+	RES=$(grep " ${MNTPATH} " ${MOUNTINFO} 2>&1)
+	RC=$?
+	if [[ ! "${RC}" == "0" ]]; then
+	# prefix with docker registry if required
+	  debug "dounmount: could not find mount for ${MNTPATH}: ${RES}"
+		log "{\"status\":\"Success\", \"message\": \" BUT could not find mount for ${MNTPATH}\"}"
+		exit 0
+	fi
+	debug "dounmount: SOURCE_MNT_DIR='${SOURCE_MNT_DIR}'"
+
+	# unmount and remove state from IMAGE directory: from/to/image
+	LOCKFILE="${TEMP_DIR}/${IMAGE_DIR}.lock"
+	TIMEOUT=30
+	debug "unmount: LOCKFILE=${LOCKFILE}"
+
+	# hold lock and process unmount
+	( flock -w ${TIMEOUT} -x 9 || failandexit "unmount: [${MNTPATH}] failed to update state [exlock $LOCKFILE]";   dounmount ) 9>${LOCKFILE}
+	exit ${RC}
+}
+
+# do the actual unmount and record change to state
+# called in the context of flock
+dounmount () {
+
+	RC=0
+	STATE_DIR=${SOURCE_MNT_DIR}/.imagevol_state
+	mkdir -p ${STATE_DIR}
+
+	# show where mounted
+	for MNT in $(grep " ${SOURCE_MNT_DIR} " ${MOUNTINFO} | awk '{print $5}')
+	do
+		debug "dounmount: [${SOURCE_MNT_DIR}] still mounted at MNT=${MNT}"
+	done
+
+	# do the actual unmount
+	umount ${MNTPATH} >/dev/null 2>&1
+
+	# remove MNTPATH from "to" state
+	grep -v "${MNTPATH}" ${STATE_DIR}/to > ${STATE_DIR}/to.tmp
+	mv ${STATE_DIR}/to.tmp ${STATE_DIR}/to
+
+	# count mounts
+	NO_MOUNTS=`cat  ${STATE_DIR}/to | wc -l`
+	debug "umount: NO_MOUNTS='${NO_MOUNTS}' for ${SOURCE_MNT_DIR}"
+	if [ "${NO_MOUNTS}" -eq "0"  ]; then
+		debug "umount: NO_MOUNTS='${NO_MOUNTS}' says time to purge ${SOURCE_MNT_DIR}"
+		HOST_TARGET_DIR=$(echo "${SOURCE_MNT_DIR}" | sed -e 's/\/mnt$//')
+		if [ -d "${HOST_TARGET_DIR}/mnt" ] && [ "${#HOST_TARGET_DIR}" -gt "10"  ]; then
+			rm -rf "${HOST_TARGET_DIR}" "${LOCKFILE}"
+		else
+			log "{\"status\":\"Failure\",\"message\":\"unmount: [${IMAGE_DIR}] invalid\"}"
+			RC=1
+			exit 1
+		fi
+	fi
+
+	log "{\"status\":\"Success\"}"
+	exit 0
+}
+
+op=$1
+
+debug "[imagevol] $op:[parameters] - $*"
+
+if [ "$op" = "init" ]; then
+	debug "init $@"
+	log "{\"status\":\"Success\",\"capabilities\":{\"attach\":false}}"
+	exit 0
+fi
+
+shift
+
+case "$op" in
+	mount)
+		domount $*
+		;;
+	unmount)
+		unmount $*
+		;;
+	*)
+		log "{\"status\":\"Not supported\"}"
+		exit 0
+esac
+
+exit 1

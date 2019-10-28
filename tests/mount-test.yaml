@@ -1,0 +1,180 @@
+---
+  apiVersion: storage.k8s.io/v1
+  kind: StorageClass
+  metadata:
+    name: imagevol
+  provisioner: piersharding/imagevol
+  parameters:
+    description: "Volume from ImageVol FlexVolume driver"
+
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-flex-imagevol-0001
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteMany
+  flexVolume:
+    driver: "piersharding/imagevol"
+    options:
+      image: "piersharding/k8s-flexvol-imagevol-test:latest"
+      hostTarget: /data/images
+  storageClassName: imagevol
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data
+spec:
+  accessModes:
+  - ReadWriteMany
+  resources:
+    requests:
+      storage: 1Gi
+  volumeName: "pv-flex-imagevol-0001"
+  storageClassName: imagevol
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx1
+spec:
+  selector:
+    app: nginx1
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment1
+  labels:
+    app: nginx1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx1
+  template:
+    metadata:
+      labels:
+        app: nginx1
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 80
+            protocol: TCP
+        volumeMounts:
+          - mountPath: /usr/share/nginx/html
+            name: www-data
+            readOnly: true
+      volumes:
+      - name: www-data
+        persistentVolumeClaim:
+          claimName: data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx2
+spec:
+  selector:
+    app: nginx2
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment2
+  labels:
+    app: nginx2
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx2
+  template:
+    metadata:
+      labels:
+        app: nginx2
+    spec:
+      containers:
+      - name: nginx
+        image: nginx
+        imagePullPolicy: IfNotPresent
+        ports:
+          - containerPort: 80
+            protocol: TCP
+        volumeMounts:
+          - mountPath: /usr/share/nginx/html
+            name: www-data
+            readOnly: true
+      volumes:
+      - name: www-data
+        persistentVolumeClaim:
+          claimName: data
+
+
+# ---
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: nginx1
+#   labels:
+#     app: www
+# spec:
+#   containers:
+#   - image: nginx
+#     imagePullPolicy: IfNotPresent
+#     name: nginx
+#     ports:
+#     - containerPort: 80
+#       protocol: TCP
+#     volumeMounts:
+#       - mountPath: /usr/share/nginx/html
+#         name: www-data
+#         readOnly: true
+#   volumes:
+#   - name: www-data
+#     persistentVolumeClaim:
+#       claimName: data
+#
+# ---
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: nginx2
+#   labels:
+#     app: www
+# spec:
+#   containers:
+#   - image: nginx
+#     imagePullPolicy: IfNotPresent
+#     name: nginx
+#     ports:
+#     - containerPort: 80
+#       protocol: TCP
+#     volumeMounts:
+#       - mountPath: /usr/share/nginx/html
+#         name: www-data
+#         readOnly: true
+#   volumes:
+#   - name: www-data
+#     persistentVolumeClaim:
+#       claimName: data

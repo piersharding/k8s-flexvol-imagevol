@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: imagevol-flex-ds
+spec:
+  template:
+    metadata:
+      name:  imagevol-flex-ds
+      labels:
+        app:  imagevol-flex-ds
+    spec:
+      containers:
+        # TODO Change to your container registry.
+        - image: "k8s-flexvol-imagevol:latest"
+          imagePullPolicy: Always
+          name: flex-deploy
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - mountPath: /flexmnt
+              name: flexvolume-mount
+          env:
+          - name: VENDOR
+            valueFrom:
+              configMapKeyRef:
+                name: imagevol-flex-ds
+                key: vendor
+          - name: DRIVER
+            valueFrom:
+              configMapKeyRef:
+                name: imagevol-flex-ds
+                key: driver
+          - name: DEBUG
+            valueFrom:
+              configMapKeyRef:
+                name: imagevol-deploy-parameters
+                key: debug
+          - name: CTR_VERSION
+            valueFrom:
+              configMapKeyRef:
+                name: imagevol-deploy-parameters
+                key: ctrVersion
+          - name: JQ_VERSION
+            valueFrom:
+              configMapKeyRef:
+                name: imagevol-deploy-parameters
+                key: jqVersion
+          - name: RUNTIME_ENDPOINT
+            valueFrom:
+              configMapKeyRef:
+                name: imagevol-deploy-parameters
+                key: runtimeEndpoint
+          - name: HOST_TARGET
+            valueFrom:
+              configMapKeyRef:
+                name: imagevol-deploy-parameters
+                key: hostTarget
+      volumes:
+        - name: flexvolume-mount
+          hostPath:
+            # TODO Change to the Flexvolume plugin directory of your cluster.
+            path: $(pluginDir)

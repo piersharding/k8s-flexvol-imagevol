@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+data:
+  runtimeEndpoint: ${RUNTIME_ENDPOINT}
+  debug: "${DEBUG}"
+metadata:
+  labels:
+    app: k8s-image-vol
+  name: imagevol-deploy-parameters

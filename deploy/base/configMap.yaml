@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: imagevol-flex-ds
+data:
+  vendor: "piersharding"
+  driver: "imagevol"

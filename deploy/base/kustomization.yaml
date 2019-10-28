@@ -1,0 +1,30 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+commonLabels:
+  app: k8s-image-vol
+
+resources:
+- daemonset.yaml
+- configMap.yaml
+
+configMapGenerator:
+- name: imagevol-deploy-parameters
+  env: params.env
+generatorOptions:
+  disableNameSuffixHash: true
+vars:
+- name: pluginDir
+  objref:
+    kind: ConfigMap
+    name: imagevol-deploy-parameters
+    apiVersion: v1
+  fieldref:
+    fieldpath: data.pluginDir
+
+images:
+- name: k8s-flexvol-imagevol
+  newName: piersharding/k8s-flexvol-imagevol
+  newTag: latest
+
+configurations:
+- params.yaml
