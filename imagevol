@@ -128,7 +128,7 @@ domount() {
 	# lock early and long
 	# store state in IMAGE directory: from/to/image
 	LOCKFILE="${TEMP_DIR}/${IMAGE_DIR}.lock"
-	TIMEOUT=300  # 5 minutes - sometimes it takes a long time to download images ...
+	TIMEOUT=600  # 10 minutes - sometimes it takes a long time to download images ...
 	debug "mount: LOCKFILE=${LOCKFILE}"
 
 	( flock -w ${TIMEOUT} -x 9 || failandexit "mount: [${MNTPATH}] failed to update state [exlock $LOCKFILE]";   checkandmount ) 9>${LOCKFILE}
@@ -251,7 +251,7 @@ unmount() {
 
 	# unmount and remove state from IMAGE directory: from/to/image
 	LOCKFILE="${TEMP_DIR}/${IMAGE_DIR}.lock"
-	TIMEOUT=30
+	TIMEOUT=180 # 3 minutes - unmount could take a while if a lot of them are queued up
 	debug "unmount: LOCKFILE=${LOCKFILE}"
 
 	# hold lock and process unmount
