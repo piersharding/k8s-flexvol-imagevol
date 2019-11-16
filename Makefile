@@ -71,7 +71,7 @@ describe: ## describe Pods executed from deployment
 	done
 
 test_image: ## build test image
-	docker build \
+	cd tests && docker build \
 	  -t $(NAME)-test:latest -f Dockerfile.test .
 
 push_test: test_image ## push test image

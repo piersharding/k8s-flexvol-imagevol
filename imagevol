@@ -280,8 +280,20 @@ dounmount () {
 	grep -v "${MNTPATH}" ${STATE_DIR}/to > ${STATE_DIR}/to.tmp
 	mv ${STATE_DIR}/to.tmp ${STATE_DIR}/to
 
+  # prune dead mount points
+  for MNT in `cat ${STATE_DIR}/to`
+  do
+  	RES=$(mountpoint "${MNT}" 2>&1)
+  	RC=$?
+    if [[ ! "${RC}" == "0" ]]; then
+      debug "umount: ${MNT} is not a mountpoint - PURGING!!!!"
+    	grep -v "${MNT}" ${STATE_DIR}/to > ${STATE_DIR}/to.tmp
+    	mv ${STATE_DIR}/to.tmp ${STATE_DIR}/to
+    fi
+  done
+
 	# count mounts
-	NO_MOUNTS=`cat  ${STATE_DIR}/to | wc -l`
+	NO_MOUNTS=`cat ${STATE_DIR}/to | wc -l`
 	debug "umount: NO_MOUNTS='${NO_MOUNTS}' for ${SOURCE_MNT_DIR}"
 	if [ "${NO_MOUNTS}" -eq "0"  ]; then
 		debug "umount: NO_MOUNTS='${NO_MOUNTS}' says time to purge ${SOURCE_MNT_DIR}"

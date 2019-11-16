@@ -16,8 +16,10 @@ FROM busybox AS build
 
 WORKDIR /
 
-RUN \
-  echo "This is a test from imagevol!" >/index.html
+#RUN \
+#  echo "This is a test from imagevol!" >/index.html
+
+COPY index.html.template /index.html
 
 FROM scratch
 
