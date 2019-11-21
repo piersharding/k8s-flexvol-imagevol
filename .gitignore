@@ -1,5 +1,8 @@
 deploy/overlays/envsub/fix-params.yaml
-*.sh
+c.sh
+p.sh
+tst.sh
+mount-hack.sh
 *.txt
 *.save
 PrivateRules.mak
