@@ -58,7 +58,6 @@ if [ -f "${SCRIPT_DIR}/../../imagevol_env.rc" ]; then
         source ${SCRIPT_DIR}/../../imagevol_env.rc
 fi
 DRIVER_LOCATION=${DRIVER_LOCATION:-/usr/libexec/kubernetes/kubelet-plugins/volume/}
-STATE_DIR=${DRIVER_LOCATION}/imagvol/state
 # /var/snap/microk8s/common/run/containerd.sock for microk8s
 # everything else should be /run/containerd/containerd.sock
 RUNTIME_ENDPOINT=${RUNTIME_ENDPOINT:-/run/containerd/containerd.sock}
@@ -68,7 +67,7 @@ HOST_TARGET=${HOST_TARGET:-/var/tmp/images}
 PLATFORM="linux/amd64"
 MOUNTINFO=/proc/self/mountinfo
 TEMP_DIR=/var/tmp
-DEBUG=false
+DEBUG=${DEBUG:-false}
 
 
 # Notes:
@@ -110,8 +109,8 @@ domount() {
 	MNTPATH=$1
 	JSON=$2
 
-	IMAGE=$(echo ${JSON} | ${JQ_EXE} -r '.image')
-	TARGET=$(echo ${JSON} | ${JQ_EXE} -r '.hostTarget')
+	IMAGE=$(echo ${JSON} | ${JQ_EXE} -r '.image | select (.!=null)')
+	TARGET=$(echo ${JSON} | ${JQ_EXE} -r '.hostTarget | select (.!=null)')
 	POD_UID=$(echo ${JSON} | ${JQ_EXE} -r '.["kubernetes.io/pod.uid"]')
 	HOST_TARGET=${TARGET:-${HOST_TARGET}}
 	IMAGE_DIR=$(echo "${IMAGE}" | sed 's/[^0-9A-Za-z_.]/_/g')

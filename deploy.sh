@@ -32,37 +32,27 @@ DEBUG=${DEBUG:-false}
 cd /flexmnt
 
 # the driver uses ctr for image pull and export
-if [ ! `which ctr` ]; then
-  echo "no existing ctr"
-  if [ ! -f "/flexmnt/ctr" ]; then
-    echo "no ctr in /flexmnt"
-    rm -f /flexmnt/containerd-$CTR_VERSION.linux-amd64.tar.gz
-    wget -O /flexmnt/containerd-$CTR_VERSION.linux-amd64.tar.gz https://github.com/containerd/containerd/releases/download/v$CTR_VERSION/containerd-$CTR_VERSION.linux-amd64.tar.gz
-    tar zxvf containerd-$CTR_VERSION.linux-amd64.tar.gz bin/ctr -C /flexmnt
-    mv bin/ctr /flexmnt/ctr
-    chmod a+x /flexmnt/ctr
-    rm -rf /flexmnt/containerd-$CTR_VERSION.linux-amd64.tar.gz /flexmnt/bin
-  fi
-  CTR_EXE="${DRIVER_LOCATION}/ctr"
-else
-  CTR_EXE=`which ctr`
+if [ ! -f "/flexmnt/ctr" ]; then
+  echo "no ctr in /flexmnt"
+  rm -f /flexmnt/containerd-$CTR_VERSION.linux-amd64.tar.gz
+  wget -O /flexmnt/containerd-$CTR_VERSION.linux-amd64.tar.gz https://github.com/containerd/containerd/releases/download/v$CTR_VERSION/containerd-$CTR_VERSION.linux-amd64.tar.gz
+  tar zxvf containerd-$CTR_VERSION.linux-amd64.tar.gz bin/ctr -C /flexmnt
+  mv bin/ctr /flexmnt/ctr
+  chmod a+x /flexmnt/ctr
+  rm -rf /flexmnt/containerd-$CTR_VERSION.linux-amd64.tar.gz /flexmnt/bin
 fi
+CTR_EXE="${DRIVER_LOCATION}/ctr"
 echo "ctr at: $(ls -latr /flexmnt/ctr)"
 
 # jq is used for parsing out details passed to driver
-if [ ! `which jq` ]; then
-  echo "no existing jq"
-  JQ_EXE="${DRIVER_LOCATION}/jq"
-  if [ ! -f "/flexmnt/jq" ]; then
-    echo "no jq in /flexmnt"
-    rm -f /flexmnt/jq-linux64
-    wget -O /flexmnt/jq-linux64 https://github.com/stedolan/jq/releases/download/jq-${JQ_VERSION}/jq-linux64
-    mv /flexmnt/jq-linux64 /flexmnt/jq
-    chmod a+x /flexmnt/jq
-  fi
-else
-  JQ_EXE=`which jq`
+if [ ! -f "/flexmnt/jq" ]; then
+  echo "no jq in /flexmnt"
+  rm -f /flexmnt/jq-linux64
+  wget -O /flexmnt/jq-linux64 https://github.com/stedolan/jq/releases/download/jq-${JQ_VERSION}/jq-linux64
+  mv /flexmnt/jq-linux64 /flexmnt/jq
+  chmod a+x /flexmnt/jq
 fi
+JQ_EXE="${DRIVER_LOCATION}/jq"
 echo "jq at: $(ls -latr /flexmnt/jq)"
 
 # set the environment file for the driver
