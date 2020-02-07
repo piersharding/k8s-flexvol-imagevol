@@ -111,6 +111,7 @@ domount() {
 
 	IMAGE=$(echo ${JSON} | ${JQ_EXE} -r '.image | select (.!=null)')
 	TARGET=$(echo ${JSON} | ${JQ_EXE} -r '.hostTarget | select (.!=null)')
+	READ_ONLY=$(echo ${JSON} | ${JQ_EXE} -r '."kubernetes.io/readwrite" | select (.!=null)')
 	POD_UID=$(echo ${JSON} | ${JQ_EXE} -r '.["kubernetes.io/pod.uid"]')
 	HOST_TARGET=${TARGET:-${HOST_TARGET}}
 	IMAGE_DIR=$(echo "${IMAGE}" | sed 's/[^0-9A-Za-z_.]/_/g')
@@ -213,15 +214,28 @@ checkandmount () {
 	rm -rf ${TEMP_IMAGE_DIR} ${UNPACK_IMAGE_DIR} >/dev/null 2>&1
 
 	# bind mount to unpacked image
-  mkdir -p ${MNTPATH} &> /dev/null
-  RES=$(mount --bind "${IMAGE_MNT_DIR}" "${MNTPATH}" 2>&1)
-  if [ $? -ne 0 ]; then
+	mkdir -p ${MNTPATH} &> /dev/null
+	RES=$(mount --bind "${IMAGE_MNT_DIR}" "${MNTPATH}" 2>&1)
+	if [ $? -ne 0 ]; then
 		debug "mount bind [${IMAGE_MNT_DIR} to ${MNTPATH}]: ${RES}"
 		rm -rf "${HOST_TARGET_DIR}" >/dev/null 2>&1
-    log "{ \"status\": \"Failure\", \"message\": \"Failed to mount ${IMAGE_MNT_DIR} at ${MNTPATH}\"}"
+		log "{ \"status\": \"Failure\", \"message\": \"Failed to mount ${IMAGE_MNT_DIR} at ${MNTPATH}\"}"
 		RC=1
-    exit 1
-  fi
+		exit 1
+	fi
+
+	# remount ro if this should be read-only
+	if [ "${READ_ONLY}" != "rw" ]; then
+		debug "mounting READ ONLY!"
+		RES=$(mount -o remount,bind,ro "${IMAGE_MNT_DIR}" "${MNTPATH}" 2>&1)
+		if [ $? -ne 0 ]; then
+			debug "remount bind ro [${IMAGE_MNT_DIR} to ${MNTPATH}]: ${RES}"
+			rm -rf "${HOST_TARGET_DIR}" >/dev/null 2>&1
+			log "{ \"status\": \"Failure\", \"message\": \"Failed to remount ro ${IMAGE_MNT_DIR} at ${MNTPATH}\"}"
+			RC=1
+			exit 1
+		fi
+	fi
 
 	echo "${IMAGE_MNT_DIR}" > ${STATE_DIR}/from
 	echo "${MNTPATH}" >> ${STATE_DIR}/to
